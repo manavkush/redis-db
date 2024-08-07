@@ -2,9 +2,7 @@ package main
 
 import (
 	"fmt"
-	"io"
 	"net"
-	"os"
 )
 
 var port = ":6379"
@@ -25,16 +23,12 @@ func main() {
 	defer conn.Close()
 
 	for {
-		buf := make([]byte, 1024)
-
-		_, err := conn.Read(buf)
+		resp := NewResp(conn)
+		value, err := resp.Read()
 		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			fmt.Println("Error in reading bytes from connection. Err", err)
-			os.Exit(1)
+			fmt.Printf("Error in reading resp value. Err: %v\n", err)
 		}
+		fmt.Println(value)
 
 		conn.Write([]byte("+OK\r\n"))
 	}
