@@ -11,11 +11,21 @@ var port = ":6379"
 
 func main() {
 	fmt.Printf("Starting listening on port: %v\n", port)
+
+	// Start the server
 	list, err := net.Listen("tcp", port)
 	if err != nil {
 		fmt.Printf("Error in listening at port %v. Err: %v", port, err)
 		return
 	}
+
+	// initialize the state of database
+	aof, err := NewAof("database.aof")
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	defer aof.Close()
 
 	conn, err := list.Accept()
 	if err != nil {
@@ -23,6 +33,19 @@ func main() {
 		return
 	}
 	defer conn.Close()
+
+	aof.Read(func(value Value) {
+		command := strings.ToUpper(value.array[0].bulk)
+		commandArgs := value.array[1:]
+
+		handler, ok := Handlers[command]
+		if !ok {
+			fmt.Println("Error in reading from AOF. Invalid handler.")
+			return
+		}
+
+		handler(commandArgs)
+	})
 
 	for {
 		resp := NewResp(conn)
@@ -54,6 +77,10 @@ func main() {
 			fmt.Printf("Invalid command received. command: %v", value)
 			writer.Write(Value{typ: "STRING", str: ""})
 			continue
+		}
+
+		if command == "SET" || command == "HSET" {
+			aof.Write(value)
 		}
 
 		result := handler(commandArgs)
