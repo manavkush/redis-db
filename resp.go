@@ -132,7 +132,9 @@ func (w *Writer) Write(v Value) error {
 	bytes := v.Marshal()
 	_, err := w.writer.Write(bytes)
 	if err != nil {
+		fmt.Printf("Error in writing value: %v. Err: %v", v, err)
 		return err
+
 	}
 	return nil
 }
@@ -167,7 +169,7 @@ func (v Value) marshalBulkString() []byte {
 	var bytes []byte
 
 	bytes = append(bytes, BULK)
-	bytes = append(bytes, string(len(v.bulk))...) // append the length of the bulk string
+	bytes = append(bytes, strconv.Itoa(len(v.bulk))...) // append the length of the bulk string
 	bytes = append(bytes, '\r', '\n')
 	bytes = append(bytes, v.bulk...)
 	bytes = append(bytes, '\r', '\n')
@@ -179,7 +181,7 @@ func (v Value) marshalArray() []byte {
 	var bytes []byte
 
 	bytes = append(bytes, ARRAY)
-	bytes = append(bytes, string(len(v.array))...)
+	bytes = append(bytes, strconv.Itoa(len(v.array))...)
 	bytes = append(bytes, '\r', '\n')
 
 	for _, val := range v.array {
