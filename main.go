@@ -1,89 +1,134 @@
 package main
 
 import (
-	"fmt"
+	"log"
+	"log/slog"
 	"net"
-	"strings"
-	"time"
+	"os"
 )
 
-var port = ":6379"
+type Config struct {
+	ListenAddr string
+}
 
-func main() {
-	fmt.Printf("Starting listening on port: %v\n", port)
+const defaultListenAddr = ":6379"
 
-	// Start the server
-	list, err := net.Listen("tcp", port)
-	if err != nil {
-		fmt.Printf("Error in listening at port %v. Err: %v", port, err)
-		return
+type Server struct {
+	Config
+	ln        net.Listener
+	peers     map[*Peer]bool
+	addPeerCh chan *Peer
+	quitCh    chan *Peer
+	aof       *Aof
+}
+
+// Creates a new server from a given config
+func NewServer(conf Config) *Server {
+	if len(conf.ListenAddr) == 0 {
+		conf.ListenAddr = defaultListenAddr
 	}
 
-	// initialize the state of database
-	aof, err := NewAof("database.aof")
+	return &Server{
+		Config:    conf,
+		peers:     make(map[*Peer]bool),
+		addPeerCh: make(chan *Peer),
+		quitCh:    make(chan *Peer),
+	}
+}
+
+func (s *Server) loop() {
+	for {
+		select {
+		case peer := <-s.addPeerCh:
+			s.peers[peer] = true
+		case peer := <-s.quitCh:
+			if _, ok := s.peers[peer]; ok {
+				delete(s.peers, peer)
+			}
+		}
+	}
+}
+
+// Starts the server to listen on the listenAddress
+func (s *Server) Start() error {
+	slog.Info("Starting server.", "listenAddr", s.ListenAddr)
+	// log.Printf("Starting to listen on %v\n", s.ListenAddr)
+	ln, err := net.Listen("tcp", s.ListenAddr)
 	if err != nil {
-		fmt.Println(err)
-		return
+		slog.Error("Couldn't start the server. Err: ", err)
+		return err
+	}
+
+	s.ln = ln
+
+	// start the channel loop in the background. This is used for adding/removing peers
+	go s.loop()
+
+	// start the accept loop
+	return s.acceptLoop()
+}
+
+// acceptLoop listens for incoming connections, accepts them and starts a go routine for each of them
+func (s *Server) acceptLoop() error {
+	for {
+		conn, err := s.ln.Accept()
+		if err != nil {
+			slog.Error("accept error.", "err", err)
+			continue
+		}
+
+		// handle the new connection in a separate loop so that we can return to accepting.
+		// this allows multiple connections to be served concurrently
+		go s.handleConn(conn)
+	}
+}
+
+func (s *Server) handleConn(conn net.Conn) {
+	peer := NewPeer(conn)
+	s.addPeerCh <- peer
+
+	slog.Info("new peer connected.", "remoteAddr", conn.RemoteAddr())
+
+	// block by running a read loop
+	peer.readLoop(s.aof)
+
+	s.quitCh <- peer
+}
+
+// migrate the old data from the append only log
+func (s *Server) migrate() error {
+	s.aof.Read(func(value Value) {
+		if value.typ != TYPE_ARRAY || len(value.array) == 0 {
+			return
+		}
+		command := COMMAND(value.array[0].bulk)
+		commandArgs := value.array[1:]
+
+		handler, ok := Handlers[command]
+		if !ok {
+			slog.Error("Invalid command type found.", "command", command)
+		}
+		handler(commandArgs)
+	})
+	return nil
+}
+
+func main() {
+	server := NewServer(Config{})
+
+	// Create an Aof
+	aof, err := NewAof("redis.aof")
+	if err != nil {
+		slog.Error("Migration failed. Unable to initialize AOF", "err", err)
+		os.Exit(1)
 	}
 	defer aof.Close()
 
-	conn, err := list.Accept()
-	if err != nil {
-		fmt.Printf("Error in accepting connection at port %v. Err: %v", port, err)
-		return
+	server.aof = aof // add the Aof to the server
+
+	if err := server.migrate(); err != nil { // Migrate from the Aof
+		slog.Error("Unable to migrate.", "err", err)
 	}
-	defer conn.Close()
 
-	aof.Read(func(value Value) {
-		command := strings.ToUpper(value.array[0].bulk)
-		commandArgs := value.array[1:]
-
-		handler, ok := Handlers[command]
-		if !ok {
-			fmt.Println("Error in reading from AOF. Invalid handler.")
-			return
-		}
-
-		handler(commandArgs)
-	})
-
-	for {
-		resp := NewResp(conn)
-		value, err := resp.Read()
-		if err != nil {
-			fmt.Printf("Error in reading resp value. Err: %v\n", err)
-			return
-		}
-
-		// The redis commands will always be in the form of an array. eg: SET key value
-		// If it's not, then it's an invalid request
-		if value.typ != "ARRAY" {
-			fmt.Println("Invalid request, expected an array. Value:", value)
-			time.Sleep(5 * time.Second)
-			continue
-		}
-		if len(value.array) == 0 { // If the array is empty, then cannot parse the command.
-			fmt.Println("Invalid request, expected array with length > 0")
-			continue
-		}
-
-		command := strings.ToUpper(value.array[0].bulk)
-		commandArgs := value.array[1:]
-
-		writer := NewWriter(conn)
-
-		handler, ok := Handlers[command]
-		if !ok {
-			fmt.Printf("Invalid command received. command: %v", value)
-			writer.Write(Value{typ: "STRING", str: ""})
-			continue
-		}
-
-		if command == "SET" || command == "HSET" {
-			aof.Write(value)
-		}
-
-		result := handler(commandArgs)
-		writer.Write(result)
-	}
+	log.Fatal(server.Start()) // Start the server
 }

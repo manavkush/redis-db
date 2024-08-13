@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"io"
+	"log/slog"
 	"os"
 	"sync"
 	"time"
@@ -15,41 +16,49 @@ type Aof struct {
 }
 
 func NewAof(path string) (*Aof, error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0666)
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0666)
 	if err != nil {
+		slog.Error("Unable to open migration file.", "err", err)
 		return nil, err
 	}
-
 	aof := &Aof{
-		file: f,
-		rd:   bufio.NewReader(f),
+		file: file,
+		rd:   bufio.NewReader(file),
 	}
 
-	// Start a go routine to regularly sync AOF to disk every 1 second
-	go func() {
-		for {
-			aof.mu.Lock()
-			aof.file.Sync()
-			aof.mu.Unlock()
-			time.Sleep(time.Second)
-		}
-	}()
+	// Start a go routine to sync the file buffer changes to disk every second.
+	go func(*Aof) {
+		aof.mu.Lock()
+		aof.file.Sync()
+		aof.mu.Unlock()
+
+		time.Sleep(time.Second)
+	}(aof)
 
 	return aof, nil
 }
 
-func (aof *Aof) Close() error {
-	aof.mu.Lock()
-	defer aof.mu.Unlock()
+func (aof *Aof) Read(fn func(Value)) error {
+	resp := NewResp(aof.file)
+	for {
+		value, err := resp.Read()
+		if err != nil {
+			if err == io.EOF {
+				return nil
+			}
 
-	return aof.file.Close()
+			slog.Error("Unable to read the Aof file", "err", err)
+			return err
+		}
+
+		fn(value)
+	}
 }
 
-func (aof *Aof) Write(value Value) error {
-	aof.mu.Lock()
-	defer aof.mu.Unlock()
+func (aof *Aof) Write(val Value) error {
+	bytes := val.Marshal()
 
-	_, err := aof.file.Write(value.Marshal())
+	_, err := aof.file.Write(bytes)
 	if err != nil {
 		return err
 	}
@@ -57,23 +66,13 @@ func (aof *Aof) Write(value Value) error {
 	return nil
 }
 
-func (aof *Aof) Read(fn func(value Value)) error {
+func (aof *Aof) Close() error {
 	aof.mu.Lock()
 	defer aof.mu.Unlock()
 
-	aof.file.Seek(0, io.SeekStart)
-
-	reader := NewResp(aof.rd)
-
-	for {
-		value, err := reader.Read()
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			return err
-		}
-		fn(value)
+	err := aof.file.Close()
+	if err != nil {
+		return err
 	}
 
 	return nil
