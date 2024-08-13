@@ -8,21 +8,44 @@ import (
 )
 
 const (
-	STRING  = '+'
-	ERROR   = '-'
-	INTEGER = ':'
-	BULK    = '$'
-	ARRAY   = '*'
+	CHAR_STRING  = '+'
+	CHAR_ERROR   = '-'
+	CHAR_INTEGER = ':'
+	CHAR_BULK    = '$'
+	CHAR_ARRAY   = '*'
 )
 
+type COMMAND string
+
+const (
+	COMMAND_PING    COMMAND = "PING"
+	COMMAND_GET     COMMAND = "GET"
+	COMMAND_SET     COMMAND = "SET"
+	COMMAND_HGET    COMMAND = "HGET"
+	COMMAND_HSET    COMMAND = "HSET"
+	COMMAND_HGETALL COMMAND = "HGETALL"
+)
+
+type VALUE_TYPE string
+
+const (
+	TYPE_ARRAY  VALUE_TYPE = "ARRAY"
+	TYPE_STRING VALUE_TYPE = "STRING"
+	TYPE_BULK   VALUE_TYPE = "BULK"
+	TYPE_ERROR  VALUE_TYPE = "ERROR"
+	TYPE_NULL   VALUE_TYPE = "NULL"
+)
+
+// Value is used to represent a redis command
 type Value struct {
-	typ   string
+	typ   VALUE_TYPE
 	str   string
 	num   int
 	bulk  string
 	array []Value
 }
 
+// Resp is used for reading a stream of RESP encoded redis commands
 type Resp struct {
 	reader *bufio.Reader
 }
@@ -47,6 +70,7 @@ func (r *Resp) readLine() (line []byte, n int, err error) {
 	return line[:len(line)-2], n, nil
 }
 
+// readInteger reads the integer from the input stream
 func (r *Resp) readInteger() (x int, n int, err error) {
 	line, n, err := r.readLine()
 	if err != nil {
@@ -59,9 +83,10 @@ func (r *Resp) readInteger() (x int, n int, err error) {
 	return int(i64), n, nil
 }
 
+// readArray method reads the input stream and parses into an array
 func (r *Resp) readArray() (Value, error) {
 	val := Value{}
-	val.typ = string("ARRAY")
+	val.typ = TYPE_ARRAY
 
 	arrSize, _, err := r.readInteger()
 	if err != nil {
@@ -83,7 +108,7 @@ func (r *Resp) readArray() (Value, error) {
 
 func (r *Resp) readBulk() (Value, error) {
 	val := Value{}
-	val.typ = "BULK"
+	val.typ = TYPE_BULK
 
 	bulkSize, _, err := r.readInteger()
 	if err != nil {
@@ -108,9 +133,9 @@ func (r *Resp) Read() (Value, error) {
 	}
 
 	switch _type {
-	case ARRAY:
+	case CHAR_ARRAY:
 		return r.readArray()
-	case BULK:
+	case CHAR_BULK:
 		return r.readBulk()
 	default:
 		fmt.Printf("Unknown type: %v\n", string(_type))
@@ -118,7 +143,7 @@ func (r *Resp) Read() (Value, error) {
 	}
 }
 
-// ======================= Serialization =========================================
+// ======================================== Serialization =========================================
 
 type Writer struct {
 	writer io.Writer
@@ -158,7 +183,7 @@ func (v Value) Marshal() []byte {
 
 func (v Value) marshalString() []byte {
 	var bytes []byte
-	bytes = append(bytes, STRING)
+	bytes = append(bytes, CHAR_STRING)
 	bytes = append(bytes, v.str...)
 	bytes = append(bytes, '\r', '\n')
 
@@ -168,7 +193,7 @@ func (v Value) marshalString() []byte {
 func (v Value) marshalBulkString() []byte {
 	var bytes []byte
 
-	bytes = append(bytes, BULK)
+	bytes = append(bytes, CHAR_BULK)
 	bytes = append(bytes, strconv.Itoa(len(v.bulk))...) // append the length of the bulk string
 	bytes = append(bytes, '\r', '\n')
 	bytes = append(bytes, v.bulk...)
@@ -180,7 +205,7 @@ func (v Value) marshalBulkString() []byte {
 func (v Value) marshalArray() []byte {
 	var bytes []byte
 
-	bytes = append(bytes, ARRAY)
+	bytes = append(bytes, CHAR_ARRAY)
 	bytes = append(bytes, strconv.Itoa(len(v.array))...)
 	bytes = append(bytes, '\r', '\n')
 
@@ -193,7 +218,7 @@ func (v Value) marshalArray() []byte {
 func (v Value) marshalError() []byte {
 	var bytes []byte
 
-	bytes = append(bytes, ERROR)
+	bytes = append(bytes, CHAR_ERROR)
 	bytes = append(bytes, v.str...)
 	bytes = append(bytes, '\r', '\n')
 
