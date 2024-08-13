@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"strings"
 )
 
 type Config struct {
@@ -101,7 +102,7 @@ func (s *Server) migrate() error {
 		if value.typ != TYPE_ARRAY || len(value.array) == 0 {
 			return
 		}
-		command := COMMAND(value.array[0].bulk)
+		command := COMMAND(strings.ToUpper(value.array[0].bulk))
 		commandArgs := value.array[1:]
 
 		handler, ok := Handlers[command]
